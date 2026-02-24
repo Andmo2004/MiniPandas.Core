@@ -12,15 +12,33 @@ namespace MiniPandas.Core.IO
     /// </summary>
     public static class SchemaInference
     {
-        // Orden de preferencia: más restrictivo → más general
+        // ── Umbral para detección automática de categóricas ───────────────────
+
+        /// <summary>
+        /// Si el ratio (valores únicos / total filas) de una columna string es menor
+        /// que este umbral, se construye como CategoricalColumn en lugar de StringColumn.
+        ///
+        /// Valor por defecto: 0.5 (50%). Ajusta según tus datos:
+        ///   - Datos muy repetitivos (países, estados, sexo): 0.1 es suficiente.
+        ///   - Datos semilibres (nombres propios): sube a 0.8 o desactiva con 1.0.
+        ///
+        /// Para desactivar la detección automática: SchemaInference.CategoricalThreshold = 1.0
+        /// </summary>
+        public static double CategoricalThreshold { get; set; } = 0.5;
+
+        // ── Cadena de inferrers (orden = prioridad) ───────────────────────────
+
+        // Orden deliberado: más restrictivo → más general.
+        // StringInferrer y CategoricalInferrer son los fallbacks y no van aquí.
         private static readonly IReadOnlyList<ITypeInferrer> Inferrers =
             new ITypeInferrer[]
             {
                 new DoubleInferrer(),
                 new DateTimeInferrer(),
-                // Aquí puedes añadir BoolInferrer, IntInferrer, etc.
-                // StringInferrer es el fallback y no participa en la cadena.
+                // Añade aquí: new BoolInferrer(), new IntInferrer(), etc.
             };
+
+        // ── API pública ───────────────────────────────────────────────────────
 
         /// <summary>
         /// Recorre las columnas de rawRows, infiere su tipo y devuelve las columnas construidas.
@@ -35,22 +53,55 @@ namespace MiniPandas.Core.IO
             int rowCount = rawRows.Count;
 
             for (int colIdx = 0; colIdx < names.Length; colIdx++)
-            {
                 yield return InferColumn(names[colIdx], colIdx, rawRows, rowCount);
-            }
         }
+
+        // ── Lógica de inferencia ──────────────────────────────────────────────
 
         private static BaseColumn InferColumn(
             string name, int colIdx, List<object[]> rows, int rowCount)
         {
+            // 1. Intentar tipos numéricos y de fecha primero
             foreach (var inferrer in Inferrers)
             {
                 if (inferrer.CanHandle(colIdx, rows))
                     return inferrer.Build(name, colIdx, rows, rowCount);
             }
 
-            // Fallback garantizado: siempre podemos representar cualquier cosa como string
-            return BuildStringColumn(name, colIdx, rows, rowCount);
+            // 2. Fallback a string: decidir si Categorical o String
+            return BuildStringOrCategorical(name, colIdx, rows, rowCount);
+        }
+
+        /// <summary>
+        /// Determina si la columna string se beneficia de codificación categórica.
+        /// Hace UNA sola pasada para recoger los datos y contar valores únicos.
+        /// Si cardinalidad / total &lt; CategoricalThreshold → CategoricalColumn.
+        /// </summary>
+        private static BaseColumn BuildStringOrCategorical(
+            string name, int colIdx, List<object[]> rows, int rowCount)
+        {
+            if (rowCount == 0 || CategoricalThreshold >= 1.0)
+                return BuildStringColumn(name, colIdx, rows, rowCount);
+
+            // Una sola pasada: recogemos datos y contamos únicos simultáneamente
+            var unique = new HashSet<string>(StringComparer.Ordinal);
+            var data = new string[rowCount];
+
+            for (int r = 0; r < rowCount; r++)
+            {
+                var str = rows[r][colIdx]?.ToString();   // null si celda nula
+                data[r] = str;
+                if (str != null) unique.Add(str);
+            }
+
+            double cardinalityRatio = (double)unique.Count / rowCount;
+
+            // Alta repetición → Categorical ahorra memoria significativamente
+            if (cardinalityRatio < CategoricalThreshold)
+                return new CategoricalColumn(name, data);
+
+            // Alta cardinalidad (IDs, nombres propios, texto libre) → StringColumn
+            return new StringColumn(name, data);
         }
 
         private static StringColumn BuildStringColumn(
@@ -64,7 +115,7 @@ namespace MiniPandas.Core.IO
     }
 
 
-    // ── Contrato ─────────────────────────────────────────────────────────────
+    // ── Contrato ──────────────────────────────────────────────────────────────
 
     public interface ITypeInferrer
     {
@@ -76,7 +127,7 @@ namespace MiniPandas.Core.IO
     }
 
 
-    // ── Implementaciones ─────────────────────────────────────────────────────
+    // ── Implementaciones ──────────────────────────────────────────────────────
 
     public sealed class DoubleInferrer : ITypeInferrer
     {
@@ -88,7 +139,8 @@ namespace MiniPandas.Core.IO
                 if (raw == null) continue;
 
                 bool fits = raw is double || raw is int || raw is long || raw is float || raw is decimal
-                    || (raw is string s && double.TryParse(s, NumberStyles.Any, CultureInfo.InvariantCulture, out _));
+                    || (raw is string s && double.TryParse(
+                            s, NumberStyles.Any, CultureInfo.InvariantCulture, out _));
 
                 if (!fits) return false;
             }

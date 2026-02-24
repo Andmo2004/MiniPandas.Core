@@ -67,12 +67,18 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Columns\BaseColumn.cs" />
+    <Compile Include="Columns\CategoricalColumn.cs" />
     <Compile Include="Columns\StringColumn.cs" />
     <Compile Include="Columns\DataColumn.cs" />
     <Compile Include="DataFrame.cs" />
     <Compile Include="IO\ExcelLoader.cs" />
     <Compile Include="IO\JsonExporter.cs" />
     <Compile Include="IO\SchemaInference.cs" />
+    <Compile Include="Operations\GroupBy\AggFunc.cs" />
+    <Compile Include="Operations\GroupBy\Aggregations.cs" />
+    <Compile Include="Operations\GroupBy\GroupByContext.cs" />
+    <Compile Include="Operations\Math\MaskOps.cs" />
+    <Compile Include="Operations\Math\VectorOps.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>

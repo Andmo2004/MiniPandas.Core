@@ -1,6 +1,6 @@
 ﻿using System;
 using System.IO;
-using System.Linq;          
+using System.Linq;
 using System.Globalization;
 using Newtonsoft.Json;
 using MiniPandas.Core.Columns;
@@ -9,8 +9,9 @@ namespace MiniPandas.Core.IO
 {
     public static class JsonExporter
     {
-        // Orientación 'records' (default de pandas): [{col1: v1, col2: v2}, ...]
-        // Orientación 'columns': {col1: [v1,v2,...], col2: [v1,v2,...]}  ← más eficiente para DataFrames grandes
+        /// <summary>
+        /// Exporta el DataFrame a un archivo JSON.
+        /// </summary>
         public static void Write(DataFrame df, string path, JsonOrientation orientation = JsonOrientation.Records)
         {
             if (df == null) throw new ArgumentNullException(nameof(df));
@@ -21,10 +22,23 @@ namespace MiniPandas.Core.IO
             {
                 writer.Formatting = Formatting.Indented;
 
-                if (orientation == JsonOrientation.Records)
-                    WriteRecords(df, writer);
-                else
-                    WriteColumns(df, writer);
+                // ── Fix: switch explícito en lugar del if/else que tragaba Split ──
+                switch (orientation)
+                {
+                    case JsonOrientation.Records:
+                        WriteRecords(df, writer);
+                        break;
+                    case JsonOrientation.Columns:
+                        WriteColumns(df, writer);
+                        break;
+                    case JsonOrientation.Split:
+                        WriteSplit(df, writer);
+                        break;
+                    default:
+                        throw new ArgumentOutOfRangeException(
+                            nameof(orientation),
+                            $"Unknown JsonOrientation value: {orientation}.");
+                }
             }
         }
 
@@ -48,7 +62,6 @@ namespace MiniPandas.Core.IO
         }
 
         // ── Columns: {a:[1,3], b:[2,4]} ──────────────────────────────────────
-        // Más eficiente: un solo WritePropertyName por columna en lugar de uno por celda
         private static void WriteColumns(DataFrame df, JsonTextWriter writer)
         {
             writer.WriteStartObject();
@@ -67,50 +80,7 @@ namespace MiniPandas.Core.IO
             writer.WriteEndObject();
         }
 
-        // ── Escritura de una celda individual ────────────────────────────────
-        private static void WriteValue(JsonTextWriter writer, BaseColumn column, int row)
-        {
-            if (column.IsNull(row))
-            {
-                writer.WriteNull();
-                return;
-            }
-
-            // El dispatch por tipo está centralizado aquí.
-            // Cuando añadas DataColumn<int>, DataColumn<bool>, etc., solo tocas este método.
-            if (column is DataColumn<double> dc)
-            {
-                var val = dc.GetRawValue(row);
-                // NaN e Infinity no son JSON válido: los escribimos como null (igual que pandas)
-                if (double.IsNaN(val) || double.IsInfinity(val))
-                    writer.WriteNull();
-                else
-                    writer.WriteValue(val);
-            }
-            else if (column is DataColumn<DateTime> dtCol)
-            {
-                // ISO 8601, el estándar de pandas para fechas en JSON
-                writer.WriteValue(dtCol.GetRawValue(row).ToString("o", CultureInfo.InvariantCulture));
-            }
-            else if (column is DataColumn<bool> boolCol)
-            {
-                writer.WriteValue(boolCol.GetRawValue(row));
-            }
-            else if (column is DataColumn<int> intCol)
-            {
-                writer.WriteValue(intCol.GetRawValue(row));
-            }
-            else if (column is StringColumn sc)
-            {
-                writer.WriteValue(sc[row]);
-            }
-            else
-            {
-                // Tipo desconocido: toString como fallback seguro en lugar de silencio
-                writer.WriteValue(column.IsNull(row) ? null : $"[unsupported:{column.GetType().Name}]");
-            }
-        }
-
+        // ── Split: {columns:[...], data:[[v1,v2],[v3,v4]]} ───────────────────
         private static void WriteSplit(DataFrame df, JsonTextWriter writer)
         {
             writer.WriteStartObject();
@@ -125,7 +95,8 @@ namespace MiniPandas.Core.IO
             // "data": [[v1, v2], [v3, v4], ...]
             writer.WritePropertyName("data");
             writer.WriteStartArray();
-            var columnList = df.Columns.ToList(); // evitar re-enumerar en cada fila
+
+            var columnList = df.Columns.ToList();   // evitar re-enumerar en cada fila
 
             for (int row = 0; row < df.RowCount; row++)
             {
@@ -137,6 +108,55 @@ namespace MiniPandas.Core.IO
 
             writer.WriteEndArray();
             writer.WriteEndObject();
+        }
+
+        // ── Escritura de una celda individual ─────────────────────────────────
+        // Dispatch centralizado por tipo. Cuando añadas nuevos DataColumn<T>
+        // (int, bool, etc.), solo tienes que tocar este método.
+        private static void WriteValue(JsonTextWriter writer, BaseColumn column, int row)
+        {
+            if (column.IsNull(row))
+            {
+                writer.WriteNull();
+                return;
+            }
+
+            if (column is DataColumn<double> dcDouble)
+            {
+                var val = dcDouble.GetRawValue(row);
+                // NaN e Infinity no son JSON válido: los escribimos como null (igual que pandas)
+                if (double.IsNaN(val) || double.IsInfinity(val))
+                    writer.WriteNull();
+                else
+                    writer.WriteValue(val);
+            }
+            else if (column is DataColumn<DateTime> dcDateTime)
+            {
+                // ISO 8601, el estándar de pandas para fechas en JSON
+                writer.WriteValue(dcDateTime.GetRawValue(row).ToString("o", CultureInfo.InvariantCulture));
+            }
+            else if (column is DataColumn<bool> dcBool)
+            {
+                writer.WriteValue(dcBool.GetRawValue(row));
+            }
+            else if (column is DataColumn<int> dcInt)
+            {
+                writer.WriteValue(dcInt.GetRawValue(row));
+            }
+            else if (column is StringColumn sc)
+            {
+                writer.WriteValue(sc[row]);
+            }
+            else if (column is CategoricalColumn cc)
+            {
+                // CategoricalColumn descodifica el código a string automáticamente
+                writer.WriteValue(cc[row]);
+            }
+            else
+            {
+                // Tipo desconocido: fallback seguro en lugar de silencio
+                writer.WriteValue($"[unsupported:{column.GetType().Name}]");
+            }
         }
     }
 
