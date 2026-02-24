@@ -15,7 +15,7 @@ namespace MiniPandas.Core.Operations.GroupBy
     ///     clave → List&lt;int&gt; (índices de filas que pertenecen a ese grupo).
     ///     No copia datos: solo índices. O(n).
     ///
-    ///   FASE 2 — Materialización (Agg / Count / Apply):
+    ///   FASE 2 — Materialización (Agg / Count / Filter / Apply):
     ///     Recorre los grupos y aplica la función de agregación sobre
     ///     los índices de cada grupo. Solo aquí se tocan los datos reales.
     ///
@@ -28,15 +28,20 @@ namespace MiniPandas.Core.Operations.GroupBy
     ///   Si la columna de agrupación es CategoricalColumn, agrupa por código
     ///   entero directamente (sin comparar strings). Más rápido en columnas
     ///   con muchas filas y pocas categorías.
+    ///
+    /// ALMACENAMIENTO DE ÍNDICES — dos pasadas:
+    ///   Pasada 1: contar cuántas filas pertenecen a cada grupo.
+    ///   Pasada 2: asignar arrays exactos y rellenar posición a posición.
+    ///   Esto evita las reallocations internas de List&lt;int&gt; cuando los grupos
+    ///   son grandes (List duplica su buffer interno cada vez que se llena).
     /// </summary>
     public class GroupByContext
     {
         private readonly DataFrame _source;
         private readonly string[] _keys;
 
-        // Mapa de clave de grupo → índices de filas
-        // La clave es string para soportar claves compuestas y tipos mixtos.
-        private readonly Dictionary<string, List<int>> _groups;
+        // Mapa de clave de grupo → índices de filas (array de tamaño exacto)
+        private readonly Dictionary<string, int[]> _groups;
 
         // Separador para claves compuestas. Cambia si tus datos contienen "|".
         public static string KeySeparator { get; set; } = "|";
@@ -49,7 +54,6 @@ namespace MiniPandas.Core.Operations.GroupBy
             if (keys == null || keys.Length == 0)
                 throw new ArgumentException("At least one key column required.", nameof(keys));
 
-            // Validar que todas las claves existen antes de empezar a iterar
             foreach (var key in keys)
                 if (!source.ContainsColumn(key))
                     throw new KeyNotFoundException(
@@ -57,38 +61,65 @@ namespace MiniPandas.Core.Operations.GroupBy
 
             _source = source;
             _keys = keys;
-            _groups = new Dictionary<string, List<int>>(StringComparer.Ordinal);
-
-            BuildGroups();
+            _groups = BuildGroups(source, keys);
         }
 
-        private void BuildGroups()
+        /// <summary>
+        /// Construye el mapa de grupos en dos pasadas para evitar reallocations.
+        ///
+        /// Pasada 1: asignar una clave a cada fila y contar cuántas filas
+        ///           pertenecen a cada grupo.
+        /// Pasada 2: con los conteos exactos, asignar arrays del tamaño justo
+        ///           y rellenar los índices.
+        /// </summary>
+        private static Dictionary<string, int[]> BuildGroups(DataFrame source, string[] keys)
         {
-            // Precargamos las columnas clave para no hacer lookup por nombre en cada fila
-            var keyColumns = new BaseColumn[_keys.Length];
-            for (int k = 0; k < _keys.Length; k++)
-                keyColumns[k] = _source[_keys[k]];
+            var keyColumns = new BaseColumn[keys.Length];
+            for (int k = 0; k < keys.Length; k++)
+                keyColumns[k] = source[keys[k]];
 
-            for (int row = 0; row < _source.RowCount; row++)
+            // ── Pasada 1: calcular la clave de cada fila y contar por grupo ──
+            var rowKeys = new string[source.RowCount];
+            var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+
+            for (int row = 0; row < source.RowCount; row++)
             {
-                string groupKey = BuildGroupKey(keyColumns, row);
+                string key = BuildGroupKey(keyColumns, row);
+                rowKeys[row] = key;
 
-                if (!_groups.TryGetValue(groupKey, out var list))
-                {
-                    list = new List<int>();
-                    _groups[groupKey] = list;
-                }
-                list.Add(row);
+                if (counts.TryGetValue(key, out int c))
+                    counts[key] = c + 1;
+                else
+                    counts[key] = 1;
             }
+
+            // ── Asignar arrays de tamaño exacto ──────────────────────────────
+            var groups = new Dictionary<string, int[]>(counts.Count, StringComparer.Ordinal);
+            var cursors = new Dictionary<string, int>(counts.Count, StringComparer.Ordinal);
+
+            foreach (var kvp in counts)
+            {
+                groups[kvp.Key] = new int[kvp.Value];   // tamaño exacto, sin reserva extra
+                cursors[kvp.Key] = 0;
+            }
+
+            // ── Pasada 2: rellenar los arrays con los índices de fila ─────────
+            for (int row = 0; row < source.RowCount; row++)
+            {
+                string key = rowKeys[row];
+                int pos = cursors[key];
+                groups[key][pos] = row;
+                cursors[key] = pos + 1;
+            }
+
+            return groups;
         }
 
         private static string BuildGroupKey(BaseColumn[] keyColumns, int row)
         {
-            // Caso común optimizado: una sola clave, sin concatenación
             if (keyColumns.Length == 1)
                 return GetKeyValue(keyColumns[0], row);
 
-            // Claves compuestas: concatenar con separador
             var parts = new string[keyColumns.Length];
             for (int k = 0; k < keyColumns.Length; k++)
                 parts[k] = GetKeyValue(keyColumns[k], row);
@@ -98,13 +129,11 @@ namespace MiniPandas.Core.Operations.GroupBy
 
         private static string GetKeyValue(BaseColumn col, int row)
         {
-            // CategoricalColumn: usamos el código entero como clave — evita comparar strings
             if (col is CategoricalColumn cc)
                 return cc.GetCode(row).ToString();
 
-            // Resto de columnas: boxing puntual solo para construir la clave
             var val = col.GetBoxed(row);
-            return val == null ? "\0null" : val.ToString();   // \0null para distinguir null de "null"
+            return val == null ? "\0null" : val.ToString();
         }
 
         // ── Propiedades de inspección ─────────────────────────────────────────
@@ -120,7 +149,7 @@ namespace MiniPandas.Core.Operations.GroupBy
         {
             var sizes = new Dictionary<string, int>(_groups.Count, StringComparer.Ordinal);
             foreach (var kvp in _groups)
-                sizes[kvp.Key] = kvp.Value.Count;
+                sizes[kvp.Key] = kvp.Value.Length;
             return sizes;
         }
 
@@ -128,19 +157,8 @@ namespace MiniPandas.Core.Operations.GroupBy
 
         /// <summary>
         /// Aplica funciones de agregación por columna y devuelve un nuevo DataFrame.
-        ///
-        /// aggregations: diccionario nombreColumna → función a aplicar.
-        ///
-        /// El DataFrame resultado tiene:
-        ///   - Una columna por cada clave de agrupación (con los valores únicos del grupo).
-        ///   - Una columna por cada entrada en aggregations.
-        ///   - Una fila por grupo.
-        ///
-        /// Ejemplo:
-        ///   df.GroupBy("pais").Agg(new Dictionary&lt;string, AggFunc&gt; {
-        ///       { "ventas", AggFunc.Sum },
-        ///       { "precio", AggFunc.Mean }
-        ///   });
+        /// El DataFrame resultado tiene una columna por clave + una por cada agregación.
+        /// Una fila por grupo.
         /// </summary>
         public DataFrame Agg(Dictionary<string, AggFunc> aggregations)
         {
@@ -148,28 +166,25 @@ namespace MiniPandas.Core.Operations.GroupBy
             if (aggregations.Count == 0)
                 throw new ArgumentException("At least one aggregation required.", nameof(aggregations));
 
-            // Validar columnas de agregación antes de iterar grupos
             foreach (var colName in aggregations.Keys)
                 if (!_source.ContainsColumn(colName))
                     throw new KeyNotFoundException(
                         $"Aggregation column '{colName}' not found in DataFrame.");
 
             int groupCount = _groups.Count;
-            var groupList = _groups.ToList();   // orden estable para construir columnas
+            var groupList = _groups.ToList();   // orden estable
 
-            // ── Construir columnas de claves ──────────────────────────────────
-            // Necesitamos descodificar la clave compuesta de vuelta a valores por columna
-            var keyData = new string[_keys.Length][];
-            for (int k = 0; k < _keys.Length; k++)
-                keyData[k] = new string[groupCount];
-
+            // ── Construir columnas clave ──────────────────────────────────────
             var keyColumns = new BaseColumn[_keys.Length];
             for (int k = 0; k < _keys.Length; k++)
                 keyColumns[k] = _source[_keys[k]];
 
+            var keyData = new string[_keys.Length][];
+            for (int k = 0; k < _keys.Length; k++)
+                keyData[k] = new string[groupCount];
+
             for (int g = 0; g < groupCount; g++)
             {
-                // Tomamos el primer índice del grupo para leer las claves
                 int sampleRow = groupList[g].Value[0];
                 for (int k = 0; k < _keys.Length; k++)
                     keyData[k][g] = keyColumns[k].IsNull(sampleRow)
@@ -178,32 +193,28 @@ namespace MiniPandas.Core.Operations.GroupBy
             }
 
             // ── Construir columnas de agregación ──────────────────────────────
-            // Cada columna de resultado es object[] que luego convertiremos al tipo correcto
             var aggResults = new Dictionary<string, object[]>(aggregations.Count);
             foreach (var colName in aggregations.Keys)
                 aggResults[colName] = new object[groupCount];
 
             for (int g = 0; g < groupCount; g++)
             {
-                var indices = groupList[g].Value;
+                int[] indices = groupList[g].Value;
                 foreach (var kvp in aggregations)
                     aggResults[kvp.Key][g] = Aggregations.Aggregate(
                         _source[kvp.Key], indices, kvp.Value);
             }
 
-            // ── Ensamblar el DataFrame resultado ──────────────────────────────
-            var resultColumns = new List<BaseColumn>();
+            // ── Ensamblar DataFrame resultado — tamaño exacto conocido ────────
+            int totalCols = _keys.Length + aggregations.Count;
+            var resultColumns = new BaseColumn[totalCols];
+            int colIdx = 0;
 
-            // Columnas clave: siempre StringColumn (para soportar cualquier tipo original)
             for (int k = 0; k < _keys.Length; k++)
-                resultColumns.Add(new StringColumn(_keys[k], keyData[k]));
+                resultColumns[colIdx++] = new StringColumn(_keys[k], keyData[k]);
 
-            // Columnas de agregación: double si es numérico, int si es Count
             foreach (var kvp in aggregations)
-            {
-                var rawResults = aggResults[kvp.Key];
-                resultColumns.Add(BuildAggColumn(kvp.Key, kvp.Value, rawResults, groupCount));
-            }
+                resultColumns[colIdx++] = BuildAggColumn(kvp.Key, kvp.Value, aggResults[kvp.Key], groupCount);
 
             return new DataFrame(resultColumns);
         }
@@ -221,7 +232,6 @@ namespace MiniPandas.Core.Operations.GroupBy
             for (int k = 0; k < _keys.Length; k++)
                 keyColumns[k] = _source[_keys[k]];
 
-            // Columnas clave
             var keyData = new string[_keys.Length][];
             for (int k = 0; k < _keys.Length; k++)
                 keyData[k] = new string[groupCount];
@@ -237,33 +247,98 @@ namespace MiniPandas.Core.Operations.GroupBy
                         ? null
                         : DecodeKeyValue(keyColumns[k], sampleRow);
 
-                counts[g] = groupList[g].Value.Count;
+                counts[g] = groupList[g].Value.Length;
             }
 
-            var resultColumns = new List<BaseColumn>();
+            // Tamaño exacto conocido: _keys.Length + 1 columna de count
+            var resultColumns = new BaseColumn[_keys.Length + 1];
             for (int k = 0; k < _keys.Length; k++)
-                resultColumns.Add(new StringColumn(_keys[k], keyData[k]));
+                resultColumns[k] = new StringColumn(_keys[k], keyData[k]);
 
-            resultColumns.Add(new DataColumn<double>("count", counts, nulls));
+            resultColumns[_keys.Length] = new DataColumn<double>("count", counts, nulls);
 
             return new DataFrame(resultColumns);
         }
 
         /// <summary>
+        /// Filtra grupos enteros según una condición (equivalente al HAVING de SQL).
+        /// Evalúa cada grupo materializado; si el predicado devuelve true,
+        /// todas las filas originales de ese grupo se incluyen en el resultado.
+        /// </summary>
+        public DataFrame Filter(Func<DataFrame, bool> predicate)
+        {
+            if (predicate == null) throw new ArgumentNullException(nameof(predicate));
+
+            // Máscara global para saber qué filas sobrevivirán al filtro
+            var globalMask = new bool[_source.RowCount];
+
+            foreach (var kvp in _groups)
+            {
+                // 1. Materializar el grupo actual (igual que hacemos en Apply)
+                var groupMask = new bool[_source.RowCount];
+                foreach (int idx in kvp.Value)
+                    groupMask[idx] = true;
+
+                var groupDf = _source.Where(groupMask);
+
+                // 2. Pasar el DataFrame del grupo a la función del usuario
+                bool keepGroup = predicate(groupDf);
+
+                // 3. Si el grupo pasa el filtro, marcamos sus filas para conservarlas
+                if (keepGroup)
+                {
+                    foreach (int idx in kvp.Value)
+                        globalMask[idx] = true;
+                }
+            }
+
+            // 4. Devolver un nuevo DataFrame aplicando la máscara global
+            return _source.Where(globalMask);
+        }
+
+        /// <summary>
+        /// Calcula una agregación por grupo y devuelve una nueva columna del MISMO TAMAÑO
+        /// que el DataFrame original. El valor agregado se repite para todas las filas del grupo.
+        /// </summary>
+        public BaseColumn Transform(string columnName, AggFunc func)
+        {
+            if (!_source.ContainsColumn(columnName))
+                throw new KeyNotFoundException(
+                    $"Transform column '{columnName}' not found in DataFrame.");
+
+            int totalRows = _source.RowCount;
+            var rawResults = new object[totalRows];
+            var column = _source[columnName];
+
+            // 1. Recorremos los grupos
+            foreach (var kvp in _groups)
+            {
+                int[] indices = kvp.Value;
+
+                // 2. Calculamos el valor agregado solo para este grupo
+                object groupValue = Aggregations.Aggregate(column, indices, func);
+
+                // 3. "Repartimos" o "Broadcasteamos" ese valor a TODAS las filas del grupo
+                foreach (int idx in indices)
+                    rawResults[idx] = groupValue;
+            }
+
+            // 4. Construimos la columna final
+            string newColName = $"{columnName}_{func.ToString().ToLower()}";
+            return BuildTransformColumn(newColName, func, rawResults, totalRows, column);
+        }
+
+        /// <summary>
         /// Aplica una función arbitraria a cada grupo y concatena los resultados.
-        /// Equivalente a pandas .groupby().apply().
-        ///
-        /// La función recibe un DataFrame con las filas del grupo
-        /// y debe devolver un DataFrame (puede tener distinto número de filas).
-        ///
-        /// ATENCIÓN: Apply() es flexible pero lento. Para agregaciones estándar
-        /// usa Agg() que es significativamente más eficiente.
+        /// ATENCIÓN: flexible pero lento. Para agregaciones estándar usa Agg().
         /// </summary>
         public DataFrame Apply(Func<DataFrame, DataFrame> func)
         {
             if (func == null) throw new ArgumentNullException(nameof(func));
 
-            var resultParts = new List<DataFrame>();
+            // Capacidad máxima conocida: _groups.Count grupos.
+            // Puede haber menos si func devuelve null en algunos grupos.
+            var resultParts = new List<DataFrame>(_groups.Count);
 
             foreach (var kvp in _groups)
             {
@@ -289,15 +364,9 @@ namespace MiniPandas.Core.Operations.GroupBy
         {
             if (col is CategoricalColumn cc)
                 return cc.DecodeCategory(cc.GetCode(row));
-            var val = col.GetBoxed(row);
-            return val?.ToString();
+            return col.GetBoxed(row)?.ToString();
         }
 
-        /// <summary>
-        /// Construye la columna de resultado de una agregación.
-        /// Count devuelve DataColumn&lt;int&gt;, el resto DataColumn&lt;double&gt;.
-        /// Los nulls se preservan cuando el grupo estaba vacío o todo era nulo.
-        /// </summary>
         private static BaseColumn BuildAggColumn(
             string name, AggFunc func, object[] rawResults, int rowCount)
         {
@@ -326,42 +395,36 @@ namespace MiniPandas.Core.Operations.GroupBy
         }
 
         /// <summary>
-        /// Concatena una lista de DataFrames verticalmente.
-        /// Todos deben tener las mismas columnas y tipos.
-        /// Usado internamente por Apply().
+        /// Concatena DataFrames verticalmente. Usado internamente por Apply().
         /// </summary>
         private static DataFrame Concat(List<DataFrame> parts)
         {
-            // Tomamos el esquema del primero
             var first = parts[0];
-            int totalRows = parts.Sum(p => p.RowCount);
-            var columnNames = first.ColumnNames.ToList();
+            int totalRows = 0;
+            for (int p = 0; p < parts.Count; p++)
+                totalRows += parts[p].RowCount;
 
-            // Para cada columna, recopilamos todos los valores en orden
-            var resultColumns = new List<BaseColumn>();
+            var columnNames = first.ColumnNames.ToArray();
+            var resultColumns = new BaseColumn[columnNames.Length];
 
-            foreach (var colName in columnNames)
+            for (int c = 0; c < columnNames.Length; c++)
             {
                 var allBoxed = new object[totalRows];
                 int offset = 0;
-                // bool hasNull = false;
 
-                foreach (var part in parts)
+                for (int p = 0; p < parts.Count; p++)
                 {
-                    if (!part.ContainsColumn(colName))
+                    var part = parts[p];
+                    if (!part.ContainsColumn(columnNames[c]))
                         throw new InvalidOperationException(
-                            $"Apply result is missing column '{colName}'.");
+                            $"Apply result is missing column '{columnNames[c]}'.");
 
-                    var col = part[colName];
+                    var col = part[columnNames[c]];
                     for (int r = 0; r < part.RowCount; r++)
-                    {
-                        allBoxed[offset] = col.GetBoxed(r);
-                        // if (allBoxed[offset] == null) hasNull = true;
-                        offset++;
-                    }
+                        allBoxed[offset++] = col.GetBoxed(r);
                 }
 
-                resultColumns.Add(BuildColumnFromBoxed(colName, allBoxed, first[colName]));
+                resultColumns[c] = BuildColumnFromBoxed(columnNames[c], allBoxed, first[columnNames[c]]);
             }
 
             return new DataFrame(resultColumns);
@@ -391,12 +454,42 @@ namespace MiniPandas.Core.Operations.GroupBy
             }
 
             // StringColumn y cualquier otro tipo
+            var strData = new string[boxed.Length];
+            for (int i = 0; i < boxed.Length; i++)
+                strData[i] = boxed[i]?.ToString();
+            return new StringColumn(name, strData);
+        }
+        // ── Helper para Transform ─────────────────────────────────────────────
+
+        private static BaseColumn BuildTransformColumn(
+            string name, AggFunc func, object[] rawResults, int rowCount, BaseColumn originalCol)
+        {
+            // Count y NUnique devuelven enteros
+            if (func == AggFunc.Count || func == AggFunc.NUnique)
             {
-                var data = new string[boxed.Length];
-                for (int i = 0; i < boxed.Length; i++)
-                    data[i] = boxed[i]?.ToString();
-                return new StringColumn(name, data);
+                var data = new int[rowCount];
+                var nulls = new bool[rowCount];
+                for (int i = 0; i < rowCount; i++)
+                {
+                    if (rawResults[i] == null) { nulls[i] = true; continue; }
+                    data[i] = Convert.ToInt32(rawResults[i]);
+                }
+                return new DataColumn<int>(name, data, nulls);
             }
+
+            // First y Last respetan el tipo de la columna original
+            if (func == AggFunc.First || func == AggFunc.Last)
+                return BuildColumnFromBoxed(name, rawResults, originalCol);
+
+            // El resto (Sum, Mean, Min, Max, Std, Var, Prod, Median) devuelven double
+            var dataDouble = new double[rowCount];
+            var nullsDouble = new bool[rowCount];
+            for (int i = 0; i < rowCount; i++)
+            {
+                if (rawResults[i] == null) { nullsDouble[i] = true; continue; }
+                dataDouble[i] = Convert.ToDouble(rawResults[i]);
+            }
+            return new DataColumn<double>(name, dataDouble, nullsDouble);
         }
     }
 }

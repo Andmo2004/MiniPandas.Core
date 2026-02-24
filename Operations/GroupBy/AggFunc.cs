@@ -27,6 +27,18 @@
         First,
 
         /// <summary>Último valor no nulo del grupo.</summary>
-        Last
+        Last,
+
+        /// <summary>Número de valores únicos (ignora nulls).</summary>
+        NUnique,
+
+        /// <summary>Varianza muestral (n-1). Solo numéricas.</summary>
+        Var,
+
+        /// <summary>Producto de los elementos. Solo numéricas.</summary>
+        Prod,
+
+        /// <summary>Mediana (valor central). Solo numéricas.</summary>
+        Median
     }
 }
