@@ -79,6 +79,8 @@
     <Compile Include="Operations\GroupBy\GroupByContext.cs" />
     <Compile Include="Operations\Math\MaskOps.cs" />
     <Compile Include="Operations\Math\VectorOps.cs" />
+    <Compile Include="Operations\Merge\JoinType.cs" />
+    <Compile Include="Operations\Merge\MergeOp.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>

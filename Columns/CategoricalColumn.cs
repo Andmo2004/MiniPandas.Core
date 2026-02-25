@@ -25,8 +25,11 @@ namespace MiniPandas.Core.Columns
     ///
     /// INMUTABILIDAD DE CATEGORÍAS:
     ///   Las categorías son fijas tras la construcción (como pandas Categorical por defecto).
-    ///   Intentar asignar un valor que no es categoría conocida lanza InvalidOperationException.
-    ///   Para convertir de vuelta a mutable usa ToStringColumn().
+    ///   El indexer es de solo lectura desde fuera del ensamblado.
+    ///   El setter es internal: solo operaciones internas pueden reasignar celdas,
+    ///   y solo a valores que ya sean categorías conocidas.
+    ///   Para añadir categorías nuevas o modificar desde fuera, usa ToStringColumn(),
+    ///   modifica el array y reconstruye con new CategoricalColumn(name, data).
     /// </summary>
     public class CategoricalColumn : BaseColumn, IEnumerable<string>
     {
@@ -123,8 +126,14 @@ namespace MiniPandas.Core.Columns
 
         /// <summary>
         /// Devuelve el string de la categoría, o null si la celda es nula.
-        /// La asignación solo acepta valores que ya son categorías conocidas.
-        /// Para añadir una categoría nueva, reconstruye la columna desde cero.
+        ///
+        /// El setter es internal: desde fuera del ensamblado esta propiedad
+        /// es de solo lectura, lo que refleja correctamente la semántica inmutable
+        /// de CategoricalColumn para consumidores externos.
+        ///
+        /// Desde dentro del ensamblado, el setter solo acepta valores que ya sean
+        /// categorías conocidas o null. Para añadir una categoría nueva desde fuera,
+        /// usa ToStringColumn(), modifica y reconstruye.
         /// </summary>
         public string this[int index]
         {
@@ -134,7 +143,7 @@ namespace MiniPandas.Core.Columns
                 int code = _codes[index];
                 return code == -1 ? null : _categories[code];
             }
-            set
+            internal set
             {
                 ValidateIndex(index);
 
@@ -269,6 +278,33 @@ namespace MiniPandas.Core.Columns
             return new CategoricalColumn(
                 Name,
                 resultCodes.ToArray(),
+                _categories,        // mismo objeto: O(1), sin copia
+                _categoryToCode);
+        }
+
+        /// <summary>
+        /// Construye una nueva CategoricalColumn recogiendo las filas indicadas por
+        /// <paramref name="indices"/>, reutilizando el mismo diccionario de categorías.
+        ///
+        /// indices[i] == -1 → celda nula en el resultado (fila sin pareja en un join).
+        ///
+        /// Equivalente a Filter pero con índices arbitrarios en lugar de máscara bool.
+        /// Úsalo desde operaciones internas (Merge, etc.) para evitar el ciclo
+        /// decode-a-string → recode-a-int que haría GatherColumn genérico.
+        /// Es O(n): mapeo directo de código a código, sin tocar _categories.
+        /// </summary>
+        internal CategoricalColumn GatherByIndices(string name, int[] indices)
+        {
+            if (indices == null) throw new ArgumentNullException(nameof(indices));
+
+            var resultCodes = new int[indices.Length];
+            for (int i = 0; i < indices.Length; i++)
+                resultCodes[i] = indices[i] == -1 ? -1 : _codes[indices[i]];
+
+            // Reutilizamos el mismo diccionario — es inmutable y compartirlo es seguro
+            return new CategoricalColumn(
+                name,
+                resultCodes,
                 _categories,        // mismo objeto: O(1), sin copia
                 _categoryToCode);
         }
