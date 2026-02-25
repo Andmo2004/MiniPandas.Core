@@ -1,4 +1,7 @@
-﻿using System;
+﻿// Copyright (c) 2025 Andrés Moros Rincón
+// Licensed under the MIT License. See LICENSE file in the project root for full license information.
+
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -6,13 +9,13 @@ using MiniPandas.Core.Columns;
 
 namespace MiniPandas.Core
 {
-    public partial class DataFrame
+    public static class DataFrameExtensions
     {
         // ── Constantes de configuración ───────────────────────────────────────
 
-        private const int DefaultMaxRows = 10;   // filas visibles antes de truncar
-        private const int DefaultMaxColWidth = 12;  // ancho máximo de cada celda
-        private const int IndexColWidth = 6;    // ancho de la columna de índice
+        private const int DefaultMaxRows = 10;
+        private const int DefaultMaxColWidth = 12;
+        private const int IndexColWidth = 6;
         private const string Ellipsis = "...";
         private const string NullLabel = "NaN";
 
@@ -42,99 +45,85 @@ namespace MiniPandas.Core
         /// Ancho máximo de cada columna (caracteres). Los valores más largos
         /// se truncan con "…".
         /// </param>
-        public void Print(int maxRows = DefaultMaxRows, int maxColWidth = DefaultMaxColWidth)
+        public static void Print(this DataFrame df, int maxRows = DefaultMaxRows, int maxColWidth = DefaultMaxColWidth)
         {
-            Console.WriteLine(ToString(maxRows, maxColWidth));
+            Console.WriteLine(df.ToDisplayString(maxRows, maxColWidth));
         }
 
         /// <summary>
         /// Versión que escribe en cualquier writer (útil para tests y logging).
         /// </summary>
-        public void Print(System.IO.TextWriter writer, int maxRows = DefaultMaxRows, int maxColWidth = DefaultMaxColWidth)
+        public static void Print(this DataFrame df, System.IO.TextWriter writer, int maxRows = DefaultMaxRows, int maxColWidth = DefaultMaxColWidth)
         {
-            writer.WriteLine(ToString(maxRows, maxColWidth));
+            writer.WriteLine(df.ToDisplayString(maxRows, maxColWidth));
         }
 
         /// <summary>
         /// Devuelve la representación tabular como string (sin imprimirla).
         /// Equivalente al __repr__ de pandas.
         /// </summary>
-        public string ToString(int maxRows = DefaultMaxRows, int maxColWidth = DefaultMaxColWidth)
+        public static string ToDisplayString(this DataFrame df, int maxRows = DefaultMaxRows, int maxColWidth = DefaultMaxColWidth)
         {
-            if (RowCount == 0 || ColumnCount == 0)
-                return BuildEmptyMessage();
+            if (df.RowCount == 0 || df.ColumnCount == 0)
+                return BuildEmptyMessage(df);
 
             // ── 1. Determinar qué filas mostrar ───────────────────────────────
-            int[] rowIndices = GetRowIndices(maxRows, out bool truncated);
+            int[] rowIndices = GetRowIndices(df, maxRows, out bool truncated);
 
             // ── 2. Calcular anchos de columna ─────────────────────────────────
-            int[] colWidths = ComputeColumnWidths(rowIndices, maxColWidth);
-            string[] colNames = ColumnNames.ToArray();
+            int[] colWidths = ComputeColumnWidths(df, rowIndices, maxColWidth);
+            string[] colNames = df.ColumnNames.ToArray();
 
             // ── 3. Construir la salida ─────────────────────────────────────────
             var sb = new StringBuilder();
 
-            // Cabecera
-            AppendHeader(sb, colNames, colWidths);
-
-            // Separador
+            AppendHeader(df, sb, colNames, colWidths);
             AppendSeparator(sb, colWidths);
 
-            // Filas de datos
-            int half = rowIndices.Length;
             if (truncated)
             {
                 int headCount = maxRows / 2;
                 int tailCount = maxRows - headCount;
 
-                // Filas de cabeza
                 for (int i = 0; i < headCount; i++)
-                    AppendRow(sb, rowIndices[i], colNames, colWidths);
+                    AppendRow(df, sb, rowIndices[i], colNames, colWidths);
 
-                // Línea de elipsis
                 AppendEllipsisRow(sb, colWidths);
 
-                // Filas de cola
                 for (int i = headCount; i < headCount + tailCount; i++)
-                    AppendRow(sb, rowIndices[i], colNames, colWidths);
+                    AppendRow(df, sb, rowIndices[i], colNames, colWidths);
             }
             else
             {
                 foreach (int idx in rowIndices)
-                    AppendRow(sb, idx, colNames, colWidths);
+                    AppendRow(df, sb, idx, colNames, colWidths);
             }
 
-            // Resumen
             sb.AppendLine();
-            sb.Append($"[{RowCount} rows × {ColumnCount} columns]");
+            sb.Append($"[{df.RowCount} rows × {df.ColumnCount} columns]");
 
-            // Tipos de columnas (una línea debajo, igual que pandas con dtypes)
-            AppendDtypes(sb, colNames);
+            AppendDtypes(df, sb, colNames);
 
             return sb.ToString();
         }
 
         // ── Helpers privados ──────────────────────────────────────────────────
 
-        private string BuildEmptyMessage()
+        private static string BuildEmptyMessage(DataFrame df)
         {
-            if (ColumnCount == 0)
-                return $"Empty DataFrame\nColumns: []\n[0 rows × 0 columns]";
+            if (df.ColumnCount == 0)
+                return "Empty DataFrame\nColumns: []\n[0 rows × 0 columns]";
 
-            var cols = string.Join(", ", ColumnNames);
-            return $"Empty DataFrame\nColumns: [{cols}]\n[0 rows × {ColumnCount} columns]";
+            var cols = string.Join(", ", df.ColumnNames);
+            return $"Empty DataFrame\nColumns: [{cols}]\n[0 rows × {df.ColumnCount} columns]";
         }
 
-        /// <summary>
-        /// Devuelve los índices de fila a mostrar.
-        /// Si el total supera maxRows, devuelve cabeza + cola (igual que pandas).
-        /// </summary>
-        private int[] GetRowIndices(int maxRows, out bool truncated)
+        private static int[] GetRowIndices(DataFrame df, int maxRows, out bool truncated)
         {
-            if (maxRows <= 0 || RowCount <= maxRows)
+            if (maxRows <= 0 || df.RowCount <= maxRows)
             {
                 truncated = false;
-                return Enumerable.Range(0, RowCount).ToArray();
+                return Enumerable.Range(0, df.RowCount).ToArray();
             }
 
             truncated = true;
@@ -145,24 +134,20 @@ namespace MiniPandas.Core
             for (int i = 0; i < head; i++)
                 indices[i] = i;
             for (int i = 0; i < tail; i++)
-                indices[head + i] = RowCount - tail + i;
+                indices[head + i] = df.RowCount - tail + i;
 
             return indices;
         }
 
-        /// <summary>
-        /// Calcula el ancho óptimo de cada columna:
-        /// max(nombre_columna, valor_más_largo) acotado a maxColWidth.
-        /// </summary>
-        private int[] ComputeColumnWidths(int[] rowIndices, int maxColWidth)
+        private static int[] ComputeColumnWidths(DataFrame df, int[] rowIndices, int maxColWidth)
         {
-            string[] colNames = ColumnNames.ToArray();
+            string[] colNames = df.ColumnNames.ToArray();
             int[] widths = new int[colNames.Length];
 
             for (int c = 0; c < colNames.Length; c++)
             {
                 int w = Math.Min(colNames[c].Length, maxColWidth);
-                BaseColumn col = this[colNames[c]];
+                BaseColumn col = df[colNames[c]];
 
                 foreach (int r in rowIndices)
                 {
@@ -170,26 +155,21 @@ namespace MiniPandas.Core
                     w = Math.Max(w, Math.Min(cell.Length, maxColWidth));
                 }
 
-                widths[c] = Math.Max(w, Ellipsis.Length); // al menos 3 ("...")
+                widths[c] = Math.Max(w, Ellipsis.Length);
             }
 
             return widths;
         }
 
-        /// <summary>
-        /// Escribe la fila de cabecera con los nombres de columna.
-        /// </summary>
-        private void AppendHeader(StringBuilder sb, string[] colNames, int[] colWidths)
+        private static void AppendHeader(DataFrame df, StringBuilder sb, string[] colNames, int[] colWidths)
         {
-            // Espacio para el índice
             sb.Append(new string(' ', IndexColWidth + 1));
 
             for (int c = 0; c < colNames.Length; c++)
             {
                 string name = Truncate(colNames[c], colWidths[c]);
 
-                // Las columnas numéricas se alinean a la derecha; las de texto a la izquierda
-                if (IsNumericColumn(this[colNames[c]]))
+                if (IsNumericColumn(df[colNames[c]]))
                     sb.Append(name.PadLeft(colWidths[c]));
                 else
                     sb.Append(name.PadRight(colWidths[c]));
@@ -199,30 +179,23 @@ namespace MiniPandas.Core
             sb.AppendLine();
         }
 
-        /// <summary>
-        /// Escribe una línea separadora de caracteres "─".
-        /// </summary>
-        private void AppendSeparator(StringBuilder sb, int[] colWidths)
+        private static void AppendSeparator(StringBuilder sb, int[] colWidths)
         {
             int totalWidth = IndexColWidth + 1
                 + colWidths.Sum()
-                + (colWidths.Length - 1) * 2;  // separador de 2 espacios entre columnas
+                + (colWidths.Length - 1) * 2;
 
             sb.AppendLine(new string('─', totalWidth));
         }
 
-        /// <summary>
-        /// Escribe una fila de datos con su índice.
-        /// </summary>
-        private void AppendRow(StringBuilder sb, int rowIdx, string[] colNames, int[] colWidths)
+        private static void AppendRow(DataFrame df, StringBuilder sb, int rowIdx, string[] colNames, int[] colWidths)
         {
-            // Índice (alineado a la derecha)
             sb.Append(rowIdx.ToString().PadLeft(IndexColWidth));
             sb.Append(' ');
 
             for (int c = 0; c < colNames.Length; c++)
             {
-                BaseColumn col = this[colNames[c]];
+                BaseColumn col = df[colNames[c]];
                 string cell = Truncate(FormatCell(col, rowIdx), colWidths[c]);
 
                 if (IsNumericColumn(col))
@@ -235,10 +208,7 @@ namespace MiniPandas.Core
             sb.AppendLine();
         }
 
-        /// <summary>
-        /// Escribe la fila de puntos suspensivos cuando hay truncado.
-        /// </summary>
-        private void AppendEllipsisRow(StringBuilder sb, int[] colWidths)
+        private static void AppendEllipsisRow(StringBuilder sb, int[] colWidths)
         {
             sb.Append(Ellipsis.PadLeft(IndexColWidth));
             sb.Append(' ');
@@ -251,16 +221,13 @@ namespace MiniPandas.Core
             sb.AppendLine();
         }
 
-        /// <summary>
-        /// Escribe los dtypes de cada columna en una línea resumen.
-        /// </summary>
-        private void AppendDtypes(StringBuilder sb, string[] colNames)
+        private static void AppendDtypes(DataFrame df, StringBuilder sb, string[] colNames)
         {
             sb.AppendLine();
             sb.AppendLine("dtypes:");
             foreach (var name in colNames)
             {
-                string dtype = GetDtypeLabel(this[name]);
+                string dtype = GetDtypeLabel(df[name]);
                 sb.AppendLine($"  {name}: {dtype}");
             }
         }
@@ -274,12 +241,9 @@ namespace MiniPandas.Core
             object val = col.GetBoxed(row);
 
             if (val is double d)
-            {
-                // Misma lógica que pandas: si es entero, no muestra decimales
                 return d == Math.Truncate(d) && !double.IsInfinity(d)
-                    ? d.ToString("F2")   // pandas siempre muestra 2 decimales para doubles
+                    ? d.ToString("F2")
                     : d.ToString("G6");
-            }
 
             if (val is float f)
                 return f.ToString("G6");

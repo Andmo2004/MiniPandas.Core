@@ -1,4 +1,7 @@
-﻿namespace MiniPandas.Core.Operations.GroupBy
+﻿// Copyright (c) 2025 Andrés Moros Rincón
+// Licensed under the MIT License. See LICENSE file in the project root for full license information.
+
+namespace MiniPandas.Core.Operations.GroupBy
 {
     /// <summary>
     /// Funciones de agregación disponibles en GroupBy.Agg().
