@@ -68,6 +68,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="DataFramePrint.cs" />
     <Compile Include="Columns\BaseColumn.cs" />
     <Compile Include="Columns\CategoricalColumn.cs" />
     <Compile Include="Columns\StringColumn.cs" />
