@@ -12,6 +12,8 @@
     <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>
+    <NuGetPackageImportStamp>
+    </NuGetPackageImportStamp>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols>
@@ -55,8 +57,8 @@
     <Reference Include="System.Runtime.CompilerServices.Unsafe, Version=6.0.3.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
       <HintPath>packages\System.Runtime.CompilerServices.Unsafe.6.1.2\lib\net462\System.Runtime.CompilerServices.Unsafe.dll</HintPath>
     </Reference>
-    <Reference Include="System.ValueTuple, Version=4.0.3.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
-      <HintPath>packages\System.ValueTuple.4.5.0\lib\net47\System.ValueTuple.dll</HintPath>
+    <Reference Include="System.Text.Encoding.CodePages, Version=10.0.0.3, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+      <HintPath>packages\System.Text.Encoding.CodePages.10.0.3\lib\net462\System.Text.Encoding.CodePages.dll</HintPath>
     </Reference>
     <Reference Include="System.Xml.Linq" />
     <Reference Include="System.Data.DataSetExtensions" />
@@ -71,12 +73,22 @@
     <Compile Include="Columns\StringColumn.cs" />
     <Compile Include="Columns\DataColumn.cs" />
     <Compile Include="DataFrame.cs" />
-    <Compile Include="IO\ExcelLoader.cs" />
-    <Compile Include="IO\JsonExporter.cs" />
-    <Compile Include="IO\SchemaInference.cs" />
+    <Compile Include="IO\Csv\CsvExporter.cs" />
+    <Compile Include="IO\Csv\CsvLoader.cs" />
+    <Compile Include="IO\Csv\CsvOptions.cs" />
+    <Compile Include="IO\Excel\ExcelExporter.cs" />
+    <Compile Include="IO\Excel\ExcelLoader.cs" />
+    <Compile Include="IO\IDataLoader.cs" />
+    <Compile Include="IO\Json\JsonExporter.cs" />
+    <Compile Include="IO\Json\JsonLoader.cs" />
+    <Compile Include="IO\Json\JsonOptions.cs" />
+    <Compile Include="IO\LoadOptions.cs" />
+    <Compile Include="IO\Core\SchemaInference.cs" />
     <Compile Include="Operations\GroupBy\AggFunc.cs" />
     <Compile Include="Operations\GroupBy\Aggregations.cs" />
+    <Compile Include="Operations\GroupBy\ColumnGather.cs" />
     <Compile Include="Operations\GroupBy\GroupByContext.cs" />
+    <Compile Include="Operations\GroupBy\GroupByOptions.cs" />
     <Compile Include="Operations\Math\MaskOps.cs" />
     <Compile Include="Operations\Math\VectorOps.cs" />
     <Compile Include="Operations\Merge\JoinType.cs" />
@@ -86,5 +98,13 @@
   <ItemGroup>
     <None Include="packages.config" />
   </ItemGroup>
+  <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <Import Project="packages\System.ValueTuple.4.6.1\build\net471\System.ValueTuple.targets" Condition="Exists('packages\System.ValueTuple.4.6.1\build\net471\System.ValueTuple.targets')" />
+  <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
+    <PropertyGroup>
+      <ErrorText>Este proyecto hace referencia a los paquetes NuGet que faltan en este equipo. Use la restauración de paquetes NuGet para descargarlos. Para obtener más información, consulte http://go.microsoft.com/fwlink/?LinkID=322105. El archivo que falta es {0}.</ErrorText>
+    </PropertyGroup>
+    <Error Condition="!Exists('packages\System.ValueTuple.4.6.1\build\net471\System.ValueTuple.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\System.ValueTuple.4.6.1\build\net471\System.ValueTuple.targets'))" />
+  </Target>
 </Project>

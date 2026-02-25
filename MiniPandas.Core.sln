@@ -7,6 +7,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MiniPandas.Core", "MiniPand
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MiniPandas.Tests", "..\MiniPandas.Tests\MiniPandas.Tests.csproj", "{0D7F7343-E124-4D84-AB53-95A6B939FE59}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MiniPandas.Demo", "..\MiniPandas.Demo\MiniPandas.Demo.csproj", "{5E1CC0AE-890C-4220-B3CB-7738F23BFEB2}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -21,6 +23,10 @@ Global
 		{0D7F7343-E124-4D84-AB53-95A6B939FE59}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{0D7F7343-E124-4D84-AB53-95A6B939FE59}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{0D7F7343-E124-4D84-AB53-95A6B939FE59}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5E1CC0AE-890C-4220-B3CB-7738F23BFEB2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5E1CC0AE-890C-4220-B3CB-7738F23BFEB2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5E1CC0AE-890C-4220-B3CB-7738F23BFEB2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5E1CC0AE-890C-4220-B3CB-7738F23BFEB2}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
