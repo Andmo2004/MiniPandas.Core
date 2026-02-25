@@ -279,7 +279,7 @@ DataFrame ultimas  = df.Tail(3);  // últimas 3 filas
 
 ### Print — Display tabular
 
-`Print()` muestra el `DataFrame` en consola con formato tabular estilo pandas. Está implementado en `DataFramePrint.cs` como `partial class DataFrame`, manteniendo la lógica de display separada del núcleo sin añadir dependencias ni tocar `DataFrame.cs`.
+`Print()` muestra el `DataFrame` en consola con formato tabular estilo pandas. Está implementado en `DataFramePrint.cs` implementa `DataFrameExtensions`, una clase estática de extensión. Esto permite añadir Print() a DataFrame sin modificar `DataFrame.cs` ni usar partial class.
 
 **Ejemplo de salida:**
 
@@ -333,7 +333,7 @@ df.Print(maxRows: 0);
 df.Print(maxColWidth: 25);
 
 // Obtener la representación como string (para logging o tests)
-string repr = df.ToString(maxRows: 5);
+string repr = df.ToDisplayString(maxRows: 5);
 
 // Escribir a cualquier TextWriter
 df.Print(writer: Console.Error, maxRows: 10);
