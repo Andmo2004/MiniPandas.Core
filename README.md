@@ -17,6 +17,7 @@
   - [Acceso a columnas](#acceso-a-columnas)
   - [Filtrado](#filtrado)
   - [Head y Tail](#head-y-tail)
+  - [Print — Display tabular](#print--display-tabular)
 - [Operaciones sobre máscaras — MaskOps](#operaciones-sobre-máscaras--maskops)
 - [Aritmética vectorizada — VectorOps](#aritmética-vectorizada--vectorops)
 - [GroupBy](#groupby)
@@ -31,6 +32,7 @@
   - [Excel](#excel)
   - [JSON](#json)
   - [SchemaInference](#schemainference)
+- [Ejemplo completo](#ejemplo-completo)
 - [Dependencias](#dependencias)
 
 ---
@@ -40,31 +42,32 @@
 ```
 MiniPandas.Core
 ├── Columns/
-│   ├── BaseColumn.cs          ← contrato abstracto de columna
-│   ├── DataColumn.cs          ← columna tipada para tipos valor (double, int, DateTime…)
-│   ├── StringColumn.cs        ← columna de strings con null nativo
-│   └── CategoricalColumn.cs   ← columna categórica con codificación por enteros
-├── DataFrame.cs               ← contenedor principal de columnas
+│   ├── BaseColumn.cs           ← contrato abstracto de columna
+│   ├── DataColumn.cs           ← columna tipada para tipos valor (double, int, DateTime…)
+│   ├── StringColumn.cs         ← columna de strings con null nativo
+│   └── CategoricalColumn.cs    ← columna categórica con codificación por enteros
+├── DataFrame.cs                ← contenedor principal de columnas
+├── DataFramePrint.cs           ← display tabular estilo pandas (partial class)
 ├── IO/
-│   ├── IDataLoader.cs         ← interfaz genérica de loaders
-│   ├── LoadOptions.cs         ← opciones base compartidas
-│   ├── Core/SchemaInference.cs← inferencia automática de tipos
-│   ├── Csv/                   ← CsvLoader, CsvExporter, CsvOptions
-│   ├── Excel/                 ← ExcelLoader, ExcelExporter
-│   └── Json/                  ← JsonLoader, JsonExporter, JsonOptions
+│   ├── IDataLoader.cs          ← interfaz genérica de loaders
+│   ├── LoadOptions.cs          ← opciones base compartidas
+│   ├── Core/SchemaInference.cs ← inferencia automática de tipos
+│   ├── Csv/                    ← CsvLoader, CsvExporter, CsvOptions
+│   ├── Excel/                  ← ExcelLoader, ExcelExporter
+│   └── Json/                   ← JsonLoader, JsonExporter, JsonOptions
 └── Operations/
     ├── Math/
-    │   ├── MaskOps.cs         ← operaciones lógicas sobre bool[]
-    │   └── VectorOps.cs       ← aritmética vectorizada sobre columnas
+    │   ├── MaskOps.cs          ← operaciones lógicas sobre bool[]
+    │   └── VectorOps.cs        ← aritmética vectorizada sobre columnas
     ├── GroupBy/
-    │   ├── GroupByContext.cs  ← resultado de df.GroupBy(...)
-    │   ├── Aggregations.cs    ← implementaciones de AggFunc
-    │   ├── AggFunc.cs         ← enum de funciones de agregación
-    │   ├── ColumnGather.cs    ← recolección de filas por índice sin boxing
-    │   └── GroupByOptions.cs  ← configuración del separador de clave
+    │   ├── GroupByContext.cs   ← resultado de df.GroupBy(...)
+    │   ├── Aggregations.cs     ← implementaciones de AggFunc
+    │   ├── AggFunc.cs          ← enum de funciones de agregación
+    │   ├── ColumnGather.cs     ← recolección de filas por índice sin boxing
+    │   └── GroupByOptions.cs   ← configuración del separador de clave
     └── Merge/
-        ├── MergeOp.cs         ← hash join entre dos DataFrames
-        └── JoinType.cs        ← enum Inner / Left / Right / Outer
+        ├── MergeOp.cs          ← hash join entre dos DataFrames
+        └── JoinType.cs         ← enum Inner / Left / Right / Outer
 ```
 
 El flujo típico es: **cargar datos → construir DataFrame → filtrar/transformar → exportar**.
@@ -73,133 +76,126 @@ El flujo típico es: **cargar datos → construir DataFrame → filtrar/transfor
 
 ## Columnas
 
+Las columnas son el bloque fundamental de la librería. Todas heredan de `BaseColumn` y tienen semántica **inmutable** en sus operaciones de filtrado: cada operación devuelve una nueva instancia sin modificar la original.
+
 ### BaseColumn
 
 `BaseColumn` es la clase abstracta que todos los tipos de columna implementan. Define el contrato mínimo para ser almacenada en un `DataFrame`.
 
-**Miembros abstractos:**
+```csharp
+public abstract class BaseColumn
+{
+    public string Name { get; }         // Inmutable tras construcción
+    public abstract int Length { get; }
+    public abstract bool IsNull(int index);
+    public abstract object GetBoxed(int index);  // Boxing controlado (display/JSON)
+    public abstract BaseColumn Filter(bool[] mask);
+}
+```
 
-| Miembro | Descripción |
-|---|---|
-| `string Name` | Nombre de la columna |
-| `int Length` | Número de filas |
-| `bool IsNull(int index)` | ¿Es nula la celda? |
-| `object GetBoxed(int index)` | Devuelve el valor como `object` (boxing) |
-| `BaseColumn Filter(bool[] mask)` | Devuelve nueva columna con las filas `true` |
-
-El boxing de `GetBoxed` está pensado solo para operaciones genéricas (display, JSON, comparaciones heterogéneas). En hot-paths usa siempre el tipo concreto.
+> **Nota de diseño:** `GetBoxed` existe para display, serialización JSON y comparaciones heterogéneas. El 99% del código interno accede a `DataColumn<T>` directamente para evitar el overhead del boxing.
 
 ---
 
 ### DataColumn\<T\>
 
-Columna tipada para **tipos valor**: `double`, `int`, `DateTime`, `bool`, etc. La restricción `where T : struct, IComparable<T>` permite nulos mediante `T?` (Nullable) y habilita comparaciones sin conocer el tipo concreto.
+Columna tipada para **tipos valor**: `double`, `int`, `DateTime`, `bool`, etc. Internamente almacena dos arrays paralelos: los datos (`T[]`) y una máscara de nulos (`BitArray`).
 
-Los nulos se representan internamente con un `BitArray` paralelo al array de datos.
-
-**Constructores:**
-
-```csharp
-// Columna vacía de N filas (todas nulas por defecto)
-var col = new DataColumn<double>("precio", 100);
-
-// Desde array de datos (sin nulos)
-var col = new DataColumn<double>("precio", new double[] { 1.5, 2.3, 3.7 });
-
-// Desde array con máscara de nulos
-var data  = new double[] { 1.5, 0.0, 3.7 };
-var nulls = new bool[]   { false, true, false }; // la segunda celda es nula
-var col = new DataColumn<double>("precio", data, nulls);
-```
-
-**Acceso con semántica nullable:**
+**Implementación:**
+- Los datos y nulos se mantienen en arrays separados para evitar boxing con `Nullable<T>`.
+- `BitArray` en lugar de `bool[]` para la máscara de nulos ahorra un factor 8 de memoria.
+- `AsSpan()` expone el array interno como `ReadOnlySpan<T>` para operaciones vectorizadas de alto rendimiento.
 
 ```csharp
-DataColumn<double> col = df.GetColumn<double>("precio");
+// Construcción
+var precios    = new DataColumn<double>("precio",   new double[] { 10.5, 20.0, 15.75 });
+var cantidades = new DataColumn<int>("cantidad", 100);  // 100 filas inicializadas a null
 
-double? valor = col[0];          // null si la celda es nula
-if (valor.HasValue)
-    Console.WriteLine(valor.Value);
+// Acceso con semántica nullable (devuelve T? — null si la celda es nula)
+double? p = precios[0];    // 10.5
+int?    c = cantidades[5]; // null
 
-// En hot-paths: verificar nulo primero, luego acceder sin overhead
-if (!col.IsNull(i))
-    double raw = col.GetRawValue(i);
-```
+// Asignación
+precios[1]    = 25.0;
+cantidades[5] = null;  // marca la celda como nula
 
-**Comparaciones (devuelven `bool[]` para usar con `Where`):**
+// Acceso raw sin overhead (para hot-paths tras verificar IsNull manualmente)
+double rawVal = precios.GetRawValue(0);
 
-```csharp
-bool[] mask = col.GreaterThan(100.0);
-bool[] mask = col.LessThan(50.0);
-bool[] mask = col.EqualTo(42.0);
-bool[] mask = col.IsNull();       // celdas nulas
-bool[] mask = col.IsNotNull();    // celdas con valor
-```
+// Comparaciones — devuelven bool[] para usar con DataFrame.Where()
+bool[] caros   = precios.GreaterThan(15.0);
+bool[] baratos = precios.LessThan(12.0);
+bool[] exactos = precios.EqualTo(20.0);
+bool[] noNulos = precios.NotNullMask();
 
-**Vista raw para operaciones vectorizadas:**
-
-```csharp
-ReadOnlySpan<double> span = col.AsSpan();
+// Vista como span (para VectorOps internamente)
+ReadOnlySpan<double> span = precios.AsSpan();
 ```
 
 ---
 
 ### StringColumn
 
-Columna especializada para `string`. No usa `DataColumn<T>` porque `string` es un tipo referencia: el propio `null` del array representa la celda nula, sin necesitar `BitArray`.
+Columna especializada para strings. A diferencia de `DataColumn<T>`, no usa `BitArray` para los nulos: `null` en el array ya tiene semántica de celda nula, ya que `string` es un tipo referencia.
+
+**Implementación:**
+- Un único `string[]` interno.
+- `string.Empty` **no** es nulo (igual que pandas); solo `null` lo es.
+- El constructor clona el array de entrada de forma defensiva para no compartir referencias.
 
 ```csharp
-// Desde array (null en el array = celda nula; string.Empty != null)
-var col = new StringColumn("ciudad", new string[] { "Madrid", null, "Barcelona" });
+var ciudades = new StringColumn("ciudad", new[] { "Madrid", "Barcelona", null, "Sevilla" });
 
 // Acceso
-string ciudad = col[0];   // "Madrid"
-bool esNula   = col.IsNull(1);  // true
+string c = ciudades[0];  // "Madrid"
+string n = ciudades[2];  // null (celda nula)
 
-// Asignación
-col[2] = null;  // marca la celda como nula
+// Modificación
+ciudades[2] = "Valencia";
+ciudades[3] = null;       // marcar como nula
 
-// Filtros útiles
-bool[] mask    = col.EqualsMask("Madrid");                        // igualdad
-bool[] maskIn  = col.IsInMask("Madrid", "Barcelona", "Valencia"); // isin
-```
+// Comprobación de nulos
+bool esNulo = ciudades.IsNull(2);  // true
 
-**Conversión a CategoricalColumn:**
+// Máscaras de filtrado
+bool[] esMadrid = ciudades.EqualsMask("Madrid");
+bool[] isIn     = ciudades.IsInMask("Madrid", "Barcelona");
 
-```csharp
-// Útil cuando CardinalityRatio < 0.5 (muchos valores repetidos)
-var catCol = CategoricalColumn.FromStringColumn(col);
+// Iteración
+foreach (string ciudad in ciudades)
+    Console.WriteLine(ciudad ?? "(nulo)");
 ```
 
 ---
 
 ### CategoricalColumn
 
-Almacena strings como **códigos enteros** (`int[]`) más un diccionario `string → int`. Es más eficiente en memoria y operaciones de agrupación cuando la cardinalidad es baja (pocos valores únicos repetidos muchas veces).
+Columna optimizada para strings con **baja cardinalidad** (pocas categorías únicas, muchas repeticiones). Internamente almacena un `int[]` de códigos y una lista de categorías, de forma análoga al tipo `category` de pandas.
 
-- Código `-1` = celda nula.
-- Las categorías se asignan en **orden de primera aparición**.
-- El diccionario se reutiliza en `Filter` y `GatherByIndices` sin recalcular (O(1)).
+**Implementación:**
+- `_codes: int[]` — un entero por fila. `-1` representa nulo.
+- `_categories: List<string>` — las categorías únicas en orden de primera aparición.
+- `_categoryToCode: Dictionary<string, int>` — índice inverso para búsquedas O(1).
+- Las comparaciones operan sobre enteros (los códigos), no sobre strings: significativamente más rápido en columnas con millones de filas.
+- Las categorías con 0 ocurrencias tras un filtrado se **preservan** (igual que pandas), para que merge/join entre columnas del mismo dominio funcionen correctamente.
 
 ```csharp
-var col = new CategoricalColumn("pais", new string[]
-{
-    "España", "Francia", "España", null, "Francia"
-});
+var paises = new CategoricalColumn("pais", new[] { "ES", "FR", "ES", "DE", "FR", "ES" });
 
-Console.WriteLine(col.CategoryCount);        // 2
-Console.WriteLine(col.Categories[0]);        // "España"
-Console.WriteLine(col[2]);                   // "España"
-Console.WriteLine(col.IsNull(3));            // true
+// Acceso
+string p = paises[0];  // "ES"
 
-// Acceso al código entero (para operaciones de bajo nivel)
-int code = col.GetCode(0);                   // 0
+// Filtrado eficiente
+bool[] esSpain = paises.EqualsMask("ES");
+bool[] iberia  = paises.IsInMask("ES", "PT");
 
-// Decodificar código → string
-string str = col.DecodeCategory(code);       // "España"
+// Acceso a código entero (bajo nivel)
+int    code = paises.GetCode(0);        // 0
+string str  = paises.DecodeCategory(0); // "ES"
 
-// Volver a StringColumn (O(n))
-StringColumn strCol = col.ToStringColumn();
+// Búsqueda de código sin excepción
+if (paises.TryGetCode("ES", out int c))
+    Console.WriteLine($"Código de ES: {c}");
 ```
 
 ---
@@ -210,83 +206,167 @@ El `DataFrame` es el contenedor principal. Internamente usa un `Dictionary<strin
 
 ### Creación
 
-**Desde columnas ya construidas:**
-
 ```csharp
-var precios  = new DataColumn<double>("precio", new double[] { 10.5, 20.0, 15.3 });
-var ciudades = new StringColumn("ciudad", new string[] { "Madrid", "Barcelona", "Sevilla" });
+// Desde columnas ya construidas
+var df = DataFrame.FromColumns(
+    new DataColumn<double>("precio",  new double[] { 10.5, 20.0, 15.75 }),
+    new DataColumn<int>("ventas",     new int[]    { 120,  340,  85    }),
+    new StringColumn("ciudad",        new string[] { "Madrid", "Barcelona", "Sevilla" })
+);
 
-// Con IEnumerable<BaseColumn>
-var df = DataFrame.FromColumns(new BaseColumn[] { precios, ciudades });
+// Añadir columna a un DataFrame existente
+df.AddColumn(new DataColumn<bool>("activo", new bool[] { true, true, false }));
 
-// Con params (más cómodo)
-var df = DataFrame.FromColumns(precios, ciudades);
+// Eliminar columna
+df.TryRemoveColumn("activo");
+
+// Propiedades
+Console.WriteLine(df.RowCount);    // 3
+Console.WriteLine(df.ColumnCount); // 3
 ```
 
-**DataFrame vacío de N filas (para añadir columnas después):**
-
-```csharp
-var df = new DataFrame(100);
-df.AddColumn(new DataColumn<double>("precio", 100));
-```
+---
 
 ### Acceso a columnas
 
 ```csharp
-// Por nombre (insensible a mayúsculas)
+// Por nombre (devuelve BaseColumn)
 BaseColumn col = df["precio"];
 
-// Por índice de posición
-BaseColumn col = df[0];
+// Tipado — lanza InvalidCastException si el tipo no coincide
+DataColumn<double> precios  = df.GetColumn<double>("precio");
+StringColumn       ciudades = df.GetStringColumn("ciudad");
 
-// Acceso tipado — lanza InvalidCastException si el tipo no coincide
-DataColumn<double>  colD = df.GetColumn<double>("precio");
-StringColumn        colS = df.GetStringColumn("ciudad");
+// Comprobar existencia
+bool existe = df.ContainsColumn("precio");  // true
 
-// Información general
-int filas    = df.RowCount;
-int columnas = df.ColumnCount;
-IEnumerable<string> nombres = df.ColumnNames;
-
-// Comprobación
-bool existe = df.ContainsColumn("precio");
-
-// Eliminar columna
-bool ok = df.TryRemoveColumn("precio");
+// Iterar columnas
+foreach (string nombre in df.ColumnNames)
+    Console.WriteLine($"{nombre}: {df[nombre].Length} filas");
 ```
+
+---
 
 ### Filtrado
 
-`Where(bool[] mask)` devuelve un nuevo `DataFrame` con las filas donde la máscara es `true`. La máscara debe tener la misma longitud que `RowCount`.
+El filtrado se basa en **máscaras booleanas** (`bool[]`). Cada columna expone métodos para generar máscaras, y `MaskOps` permite combinarlas.
 
 ```csharp
-// Filtrar por precio > 100
 DataColumn<double> precio = df.GetColumn<double>("precio");
-bool[] mask = precio.GreaterThan(100.0);
-DataFrame resultado = df.Where(mask);
+StringColumn       ciudad = df.GetStringColumn("ciudad");
 
-// Combinar condiciones
-StringColumn ciudad = df.GetStringColumn("ciudad");
-bool[] maskCiudad = ciudad.EqualsMask("Madrid");
-bool[] maskCombinada = MaskOps.And(mask, maskCiudad);
-DataFrame filtrado = df.Where(maskCombinada);
+// Máscaras simples
+bool[] caros   = precio.GreaterThan(15.0);
+bool[] eMadrid = ciudad.EqualsMask("Madrid");
+
+// Combinar con MaskOps
+bool[] filtro = MaskOps.And(caros, eMadrid);
+
+// Aplicar — devuelve un nuevo DataFrame (inmutable)
+DataFrame resultado = df.Where(filtro);
 ```
+
+---
 
 ### Head y Tail
 
 ```csharp
-DataFrame primeras5 = df.Head();     // primeras 5 filas (por defecto)
-DataFrame primeras10 = df.Head(10);
-
-DataFrame ultimas5 = df.Tail();      // últimas 5 filas
-DataFrame ultimas3 = df.Tail(3);
+DataFrame primeras = df.Head(5);  // primeras 5 filas (por defecto)
+DataFrame ultimas  = df.Tail(3);  // últimas 3 filas
 ```
+
+---
+
+### Print — Display tabular
+
+`Print()` muestra el `DataFrame` en consola con formato tabular estilo pandas. Está implementado en `DataFramePrint.cs` como `partial class DataFrame`, manteniendo la lógica de display separada del núcleo sin añadir dependencias ni tocar `DataFrame.cs`.
+
+**Ejemplo de salida:**
+
+```
+            ciudad        precio    ventas
+       ─────────────────────────────────────
+     0  Madrid         10.50       120
+     1  Barcelona      20.00       340
+     2  Sevilla          NaN        85
+     3  Valencia       15.75       210
+
+[4 rows × 3 columns]
+
+dtypes:
+  ciudad: category
+  precio: float64
+  ventas: int32
+```
+
+**Comportamiento:**
+- Columnas **numéricas** alineadas a la derecha; texto a la izquierda (igual que pandas).
+- Celdas nulas se muestran como `NaN`.
+- Si el DataFrame supera `maxRows`, se muestran cabeza y cola con `...` en medio.
+- Los valores más largos que `maxColWidth` se truncan con `…`.
+- Línea de `dtypes` al final con el tipo real de cada columna.
+
+**Mapeo de tipos a dtypes:**
+
+| Tipo .NET              | dtype mostrado |
+|------------------------|----------------|
+| `DataColumn<double>`   | `float64`      |
+| `DataColumn<float>`    | `float32`      |
+| `DataColumn<int>`      | `int32`        |
+| `DataColumn<long>`     | `int64`        |
+| `DataColumn<bool>`     | `bool`         |
+| `DataColumn<DateTime>` | `datetime64`   |
+| `CategoricalColumn`    | `category`     |
+| `StringColumn`         | `object`       |
+
+```csharp
+// Uso básico (10 filas, ancho máximo 12 caracteres por celda)
+df.Print();
+
+// Mostrar más filas
+df.Print(maxRows: 20);
+
+// Mostrar todas las filas sin truncar
+df.Print(maxRows: 0);
+
+// Columnas más anchas (útil para strings largos)
+df.Print(maxColWidth: 25);
+
+// Obtener la representación como string (para logging o tests)
+string repr = df.ToString(maxRows: 5);
+
+// Escribir a cualquier TextWriter
+df.Print(writer: Console.Error, maxRows: 10);
+```
+
+**Ejemplo con truncado** (DataFrame de 100 filas):
+
+```
+            pais    ventas    precio
+       ─────────────────────────────
+     0   España    120.00     10.50
+     1   Francia   340.00     20.00
+     2  Alemania    85.00     15.75
+   ...      ...       ...       ...
+    97   España    210.00     18.00
+    98   Italia    175.00     22.50
+    99   Francia   300.00     19.00
+
+[100 rows × 3 columns]
+
+dtypes:
+  pais: category
+  ventas: float64
+  precio: float64
+```
+
+> **Nota de implementación:** `DataFramePrint.cs` usa `partial class DataFrame` para dividir la clase en dos archivos. El compilador los fusiona en una sola clase al compilar, como si fueran uno. Esto permite mantener la lógica de display aislada sin necesidad de clases auxiliares ni métodos de extensión.
 
 ---
 
 ## Operaciones sobre máscaras — MaskOps
 
-Las máscaras (`bool[]`) son el puente entre comparaciones y filtrado. `MaskOps` proporciona operaciones lógicas element-wise.
+`MaskOps` proporciona operaciones lógicas element-wise sobre `bool[]`.
 
 ```csharp
 using MiniPandas.Core.Operations.Math;
@@ -307,11 +387,11 @@ bool[] no = MaskOps.Not(maskA);
 bool[] xo = MaskOps.Xor(maskA, maskB);
 
 // Combinar muchas a la vez
-bool[] todas = MaskOps.All(maskA, maskB, maskC);  // equivale a A & B & C
-bool[] alguna = MaskOps.Any(maskA, maskB, maskC); // equivale a A | B | C
+bool[] todas  = MaskOps.All(maskA, maskB, maskC);  // equivale a A & B & C
+bool[] alguna = MaskOps.Any(maskA, maskB, maskC);  // equivale a A | B | C
 
 // Estadísticas sobre la máscara
-int nTrue     = MaskOps.CountTrue(mask);
+int   nTrue   = MaskOps.CountTrue(mask);
 int[] indices = MaskOps.TrueIndices(mask);  // posiciones donde es true
 ```
 
@@ -328,32 +408,31 @@ DataColumn<double> a = df.GetColumn<double>("precio");
 DataColumn<double> b = df.GetColumn<double>("coste");
 
 // ── Columna OP Columna ─────────────────────────────────────────────────────
-DataColumn<double> suma      = VectorOps.Add(a, b);       // nombre: "precio+coste"
-DataColumn<double> resta     = VectorOps.Subtract(a, b);
-DataColumn<double> producto  = VectorOps.Multiply(a, b);
-DataColumn<double> cociente  = VectorOps.Divide(a, b);    // div/0 → null (no excepción)
+DataColumn<double> suma     = VectorOps.Add(a, b);       // nombre: "precio+coste"
+DataColumn<double> resta    = VectorOps.Subtract(a, b);
+DataColumn<double> producto = VectorOps.Multiply(a, b);
+DataColumn<double> cociente = VectorOps.Divide(a, b);    // div/0 → null (no excepción)
 
 // ── Columna OP Escalar ─────────────────────────────────────────────────────
-DataColumn<double> conIVA    = VectorOps.Multiply(a, 1.21);
-DataColumn<double> ajustada  = VectorOps.Add(a, 5.0);
-DataColumn<double> reducida  = VectorOps.Subtract(a, 10.0);
-DataColumn<double> normaliz  = VectorOps.Divide(a, 100.0); // escalar 0 → DivideByZeroException
+DataColumn<double> conIVA   = VectorOps.Multiply(a, 1.21);
+DataColumn<double> ajustada = VectorOps.Add(a, 5.0);
+DataColumn<double> normaliz = VectorOps.Divide(a, 100.0);
 
 // ── Operaciones int ────────────────────────────────────────────────────────
-DataColumn<int> cantA = df.GetColumn<int>("cantidad");
-DataColumn<int> cantB = df.GetColumn<int>("devueltos");
-DataColumn<int>    sumaInt  = VectorOps.Add(cantA, cantB);
-DataColumn<double> divInt   = VectorOps.Divide(cantA, cantB); // siempre double
+DataColumn<int>    cantA   = df.GetColumn<int>("cantidad");
+DataColumn<int>    cantB   = df.GetColumn<int>("devueltos");
+DataColumn<int>    sumaInt = VectorOps.Add(cantA, cantB);
+DataColumn<double> divInt  = VectorOps.Divide(cantA, cantB); // siempre devuelve double
 
 // ── Estadísticas escalares ─────────────────────────────────────────────────
-double suma_val  = VectorOps.Sum(a);    // NaN si todos null
-double media     = VectorOps.Mean(a);
-double min       = VectorOps.Min(a);
-double max       = VectorOps.Max(a);
-double std       = VectorOps.Std(a);    // desviación estándar muestral (n-1)
-int    conteo    = VectorOps.Count(a);  // no nulos
+double sumaVal = VectorOps.Sum(a);    // NaN si todos null
+double media   = VectorOps.Mean(a);
+double min     = VectorOps.Min(a);
+double max     = VectorOps.Max(a);
+double std     = VectorOps.Std(a);   // desviación estándar muestral (n-1)
+int    conteo  = VectorOps.Count(a); // no nulos
 
-// Añadir la columna calculada al DataFrame original
+// Añadir la columna calculada al DataFrame
 df.AddColumn(suma);
 ```
 
@@ -364,11 +443,11 @@ df.AddColumn(suma);
 `df.GroupBy(params string[] keys)` devuelve un `GroupByContext`, que encapsula los grupos sin materializarlos. La clave de grupo es la concatenación de los valores de las columnas clave separados por `"|"` (configurable con `GroupByOptions`).
 
 ```csharp
-GroupByContext grp = df.GroupBy("pais");
+GroupByContext grp      = df.GroupBy("pais");
 GroupByContext grpMulti = df.GroupBy("pais", "ciudad");
 
 // Propiedades de inspección
-int numGrupos = grp.GroupCount;
+int numGrupos                    = grp.GroupCount;
 Dictionary<string, int> tamaños = grp.GroupSizes(); // clave → nº filas
 ```
 
@@ -379,6 +458,8 @@ var opts = new GroupByOptions(keySeparator: "\x00|\x00");
 GroupByContext grp = df.GroupBy(opts, "categoria", "subcategoria");
 ```
 
+---
+
 ### Agg
 
 Agrega columnas numéricas por grupo. Devuelve un `DataFrame` con una fila por grupo.
@@ -388,13 +469,16 @@ Agrega columnas numéricas por grupo. Devuelve un `DataFrame` con una fila por g
 ```csharp
 DataFrame resultado = df.GroupBy("pais").Agg(new Dictionary<string, AggFunc>
 {
-    { "ventas",   AggFunc.Sum  },
-    { "precio",   AggFunc.Mean },
+    { "ventas",   AggFunc.Sum   },
+    { "precio",   AggFunc.Mean  },
     { "clientes", AggFunc.Count }
 });
-
 // resultado tiene columnas: "pais", "ventas", "precio", "clientes"
+
+resultado.Print();
 ```
+
+---
 
 ### Count
 
@@ -405,9 +489,11 @@ DataFrame conteo = df.GroupBy("pais").Count();
 // columnas: "pais", "count"
 ```
 
+---
+
 ### Filter
 
-Filtra grupos enteros según un predicado. El predicado recibe el sub-`DataFrame` del grupo.
+Filtra grupos enteros según un predicado. El predicado recibe el sub-`DataFrame` del grupo. Internamente usa `GatherRows()` por grupo — O(tamaño_grupo) — en lugar de construir una máscara global O(n).
 
 ```csharp
 // Solo grupos con más de 1000 ventas totales
@@ -418,7 +504,7 @@ DataFrame grandes = df.GroupBy("pais").Filter(grupo =>
 });
 ```
 
-La implementación usa `GatherRows()` por grupo (O(tamaño_grupo)) en lugar de construir una máscara global (O(n)).
+---
 
 ### Transform
 
@@ -430,6 +516,8 @@ BaseColumn mediaGrupo = df.GroupBy("pais").Transform("ventas", AggFunc.Mean);
 df.AddColumn(mediaGrupo);  // nombre: "ventas_mean"
 ```
 
+---
+
 ### Apply
 
 Aplica una función arbitraria a cada grupo y concatena los resultados verticalmente.
@@ -437,7 +525,6 @@ Aplica una función arbitraria a cada grupo y concatena los resultados verticalm
 ```csharp
 DataFrame resultado = df.GroupBy("pais").Apply(grupo =>
 {
-    // Normalizar ventas dentro del grupo
     var ventas = grupo.GetColumn<double>("ventas");
     double max = VectorOps.Max(ventas);
     DataColumn<double> normalizadas = VectorOps.Divide(ventas, max);
@@ -459,70 +546,50 @@ Implementa un **hash join** entre dos DataFrames. Equivale a `pandas.DataFrame.m
 2. **Probe:** itera el izquierdo buscando coincidencias.
 3. **Gather:** construye las columnas del resultado via `ColumnGather`.
 
-Las filas sin pareja (en joins externos) producen celdas nulas (índice `-1`).
+| `JoinType` | Comportamiento |
+|---|---|
+| `Inner` | Solo filas con coincidencia en ambos lados |
+| `Left`  | Todas las filas del izquierdo; nulos si no hay coincidencia derecha |
+| `Right` | Todas las filas del derecho; nulos si no hay coincidencia izquierda |
+| `Outer` | Todas las filas de ambos lados |
 
 ```csharp
-// Join por una columna con el mismo nombre en ambos
-DataFrame resultado = left.Merge(right, "id_cliente");
+// Inner join (por defecto)
+DataFrame resultado = left.Merge(right, on: "id");
 
-// Join por una columna con nombres distintos
+// Left join
+DataFrame resultado = left.Merge(right, on: "id", how: JoinType.Left);
+
+// Join con columnas de distinto nombre
 DataFrame resultado = left.Merge(right,
     leftOn:  new[] { "id_cliente" },
-    rightOn: new[] { "cliente_id" });
+    rightOn: new[] { "cliente_id" },
+    how: JoinType.Left);
 
 // Join por múltiples columnas
 DataFrame resultado = left.Merge(right,
-    leftOn:  new[] { "pais", "ciudad" },
-    rightOn: new[] { "pais", "ciudad" },
-    how: JoinType.Left);
-```
-
-**Tipos de join:**
-
-| `JoinType` | Equivalente SQL | Comportamiento |
-|---|---|---|
-| `Inner` | `INNER JOIN` | Solo filas con clave en ambos (por defecto) |
-| `Left` | `LEFT JOIN` | Todas las filas del izquierdo; nulos en columnas derechas sin pareja |
-| `Right` | `RIGHT JOIN` | Todas las filas del derecho |
-| `Outer` | `FULL OUTER JOIN` | Todas las filas de ambos; nulos donde no hay pareja |
-
-```csharp
-// Ejemplo completo
-var pedidos = DataFrame.FromColumns(
-    new DataColumn<int>("id_pedido", new int[] { 1, 2, 3 }),
-    new DataColumn<int>("id_cliente", new int[] { 10, 20, 10 }),
-    new DataColumn<double>("importe", new double[] { 150.0, 200.0, 80.0 }));
-
-var clientes = DataFrame.FromColumns(
-    new DataColumn<int>("id_cliente", new int[] { 10, 20, 30 }),
-    new StringColumn("nombre", new string[] { "Ana", "Luis", "Marta" }));
-
-DataFrame joined = pedidos.Merge(clientes, "id_cliente");
-// Resultado: id_pedido | id_cliente | importe | nombre
-//                    1 |         10 |   150.0 | Ana
-//                    2 |         20 |   200.0 | Luis
-//                    3 |         10 |    80.0 | Ana
+    on:  new[] { "pais", "ciudad" },
+    how: JoinType.Inner);
 ```
 
 ---
 
 ## IO — Carga y exportación
 
-Todos los loaders implementan `IDataLoader` y aceptan opciones genéricas (`LoadOptions`) o específicas del formato.
+Todos los loaders implementan `IDataLoader`, lo que permite inyección de dependencias y sustitución por loaders falsos en tests.
 
 ```csharp
 public interface IDataLoader
 {
     DataFrame Load(string path, LoadOptions options = null);
 }
-```
 
-Esto permite inyección de dependencias y tests con loaders falsos:
-
-```csharp
+// Uso genérico (el llamador no conoce el formato):
 IDataLoader loader = new CsvLoader();
 DataFrame df = loader.Load("datos.csv");
 ```
+
+---
 
 ### CSV
 
@@ -532,24 +599,26 @@ DataFrame df = loader.Load("datos.csv");
 - BOM UTF-8 se ignora automáticamente.
 
 ```csharp
-// Carga con coma (por defecto)
+// Coma (por defecto)
 DataFrame df = new CsvLoader().Load("datos.csv");
 
-// Carga con punto y coma (ficheros europeos)
+// Punto y coma (ficheros europeos)
 DataFrame df = new CsvLoader().Load("datos.csv", CsvOptions.European);
 
 // Opciones a medida
 var opts = new CsvOptions(
-    delimiter: '\t',          // tabulador
+    delimiter: '\t',             // tabulador
     hasHeader: true,
-    categoricalThreshold: 0.3 // columnas con < 30% valores únicos → CategoricalColumn
+    categoricalThreshold: 0.3    // columnas con < 30% valores únicos → CategoricalColumn
 );
 DataFrame df = new CsvLoader().Load("datos.tsv", opts);
 
-// Exportar a CSV
+// Exportar
 CsvExporter.Export(df, "salida.csv");
 CsvExporter.Export(df, "salida.csv", delimiter: ';');
 ```
+
+---
 
 ### Excel
 
@@ -569,15 +638,17 @@ ExcelExporter.Export(df, "salida.xlsx");
 ExcelExporter.Export(df, "salida.xlsx", sheetName: "Ventas");
 ```
 
+---
+
 ### JSON
 
 **JsonLoader** soporta tres orientaciones. Si la orientación no se especifica, la detecta automáticamente inspeccionando el token raíz del JSON.
 
 | Orientación | Estructura | Uso típico |
 |---|---|---|
-| `Records` | `[{col:val}, ...]` | Legible, compatible con pandas |
-| `Columns` | `{col:[val,...]}` | Compacto, ideal para gráficos |
-| `Split` | `{columns:[...], data:[[],...]}` | Más compacto, SQL bulk |
+| `Records` | `[{col:val}, ...]`               | Legible, compatible con pandas |
+| `Columns` | `{col:[val,...]}`                | Compacto, ideal para gráficos  |
+| `Split`   | `{columns:[...], data:[[],...]}` | Más compacto, SQL bulk         |
 
 **Autodetección:**
 - Token raíz `[` → Records
@@ -593,61 +664,36 @@ DataFrame df = new JsonLoader().Load("datos.json", JsonOptions.Records);
 DataFrame df = new JsonLoader().Load("datos.json", new JsonOptions(JsonOrientation.Split));
 
 // Exportar
-JsonExporter.Export(df, "salida.json");                              // Records, indentado
+JsonExporter.Export(df, "salida.json");                               // Records, indentado
 JsonExporter.Export(df, "salida_columns.json", JsonOptions.Columns);
 JsonExporter.Export(df, "salida_compact.json",
     new JsonOptions(JsonOrientation.Records, indented: false));
 ```
 
-### SchemaInference
-
-`SchemaInference` infiere el tipo de cada columna a partir de datos crudos (`object[][]`). Es utilizado internamente por todos los loaders y puede usarse directamente para escenarios personalizados.
-
-**Cadena de inferencia (orden de prioridad):**
-1. `IntInferrer` — enteros puros (sin parte decimal)
-2. `DoubleInferrer` — numérico con decimales o strings numéricos
-3. `DateTimeInferrer` — fechas nativas o strings parseables como fecha
-4. Fallback a `StringColumn` o `CategoricalColumn` (según `CategoricalThreshold`)
-
-El umbral categórico (por defecto `0.5`) determina si una columna de strings con alta repetición se convierte en `CategoricalColumn`:
-
-```
-CategoricalColumn si: (nº valores únicos / nº total filas) < CategoricalThreshold
-```
-
-```csharp
-// Uso interno — los loaders lo invocan automáticamente
-// Raramente necesitarás llamarlo directamente, pero es posible:
-var opts = new LoadOptions { CategoricalThreshold = 0.3 };
-IEnumerable<BaseColumn> cols = SchemaInference.InferColumns(names, rawRows, opts);
-DataFrame df = DataFrame.FromColumns(cols);
-```
-
 ---
 
-## Dependencias
+### SchemaInference
 
-| Paquete | Versión | Uso |
-|---|---|---|
-| `ExcelDataReader` | 3.8.0 | Lectura de ficheros Excel (.xlsx/.xls) |
-| `Newtonsoft.Json` | 13.0.4 | Lectura y escritura de JSON |
-| `System.Memory` | 4.6.3 | `ReadOnlySpan<T>` en .NET 4.7.2 |
-| `System.Buffers` | 4.6.1 | Soporte de memoria para System.Memory |
-| `System.Numerics.Vectors` | 4.6.1 | Operaciones SIMD (soporte transitivo) |
-| `System.ValueTuple` | 4.6.1 | Tuplas de valor en .NET 4.7.2 |
-| `System.Runtime.CompilerServices.Unsafe` | 6.1.2 | Interoperabilidad de bajo nivel |
-| `System.Text.Encoding.CodePages` | 10.0.3 | Codificaciones de texto extendidas |
+`SchemaInference` infiere el tipo de cada columna a partir de datos crudos (`object[][]`). Lo usan internamente todos los loaders. La cadena de inferencia aplica los inferrers en orden de prioridad (más restrictivo primero):
 
-**Restaurar paquetes NuGet:**
+1. `IntInferrer` — enteros puros (`int`, `long` o strings numéricos enteros).
+2. `DoubleInferrer` — numérico con decimales.
+3. `DateTimeInferrer` — fechas nativas o strings parseables como fecha.
+4. Fallback a `StringColumn` o `CategoricalColumn` según `CategoricalThreshold`.
 
-```bash
-nuget restore MiniPandas.Core.csproj
-```
+El umbral `CategoricalThreshold` (entre 0 y 1) controla cuándo una columna de strings se convierte en `CategoricalColumn`. Si `valores_únicos / total_filas < threshold`, la columna se almacena como categórica.
 
-**Compilar:**
+```csharp
+// Usar directamente en un loader personalizado
+var columnas = SchemaInference.InferColumns(
+    names:   new[] { "ciudad", "precio", "fecha" },
+    rawRows: rawRows,
+    options: new LoadOptions { CategoricalThreshold = 0.4 }
+);
 
-```bash
-msbuild MiniPandas.Core.csproj /p:Configuration=Release
+var df = new DataFrame(filas);
+foreach (var col in columnas)
+    df.AddColumn(col);
 ```
 
 ---
@@ -659,50 +705,61 @@ using MiniPandas.Core;
 using MiniPandas.Core.Columns;
 using MiniPandas.Core.IO.Csv;
 using MiniPandas.Core.IO.Json;
+using MiniPandas.Core.Operations.GroupBy;
 using MiniPandas.Core.Operations.Math;
 using MiniPandas.Core.Operations.Merge;
-using System.Collections.Generic;
 
 // 1. Cargar datos
 DataFrame ventas = new CsvLoader().Load("ventas.csv");
 
-// 2. Inspeccionar
-Console.WriteLine($"Filas: {ventas.RowCount}, Columnas: {ventas.ColumnCount}");
-DataFrame muestra = ventas.Head(5);
+// 2. Inspeccionar el DataFrame
+ventas.Print();
 
-// 3. Filtrar
+// 3. Filtrar: pedidos con precio > 50 y país = "España"
 DataColumn<double> precio = ventas.GetColumn<double>("precio");
-StringColumn pais = ventas.GetStringColumn("pais");
+StringColumn       pais   = ventas.GetStringColumn("pais");
 
-bool[] maskPrecio = precio.GreaterThan(50.0);
-bool[] maskPais   = pais.IsInMask("España", "Francia");
-bool[] maskFinal  = MaskOps.And(maskPrecio, maskPais);
-DataFrame filtrado = ventas.Where(maskFinal);
+DataFrame filtrado = ventas.Where(MaskOps.And(
+    precio.GreaterThan(50),
+    pais.EqualsMask("España")
+));
+filtrado.Print(maxRows: 5);
 
 // 4. Calcular columna derivada
-DataColumn<double> coste = filtrado.GetColumn<double>("coste");
+DataColumn<double> coste  = filtrado.GetColumn<double>("coste");
 DataColumn<double> margen = VectorOps.Subtract(precio, coste);
-filtrado.AddColumn(new DataColumn<double>("margen",
-    // VectorOps devuelve la columna calculada; la renombramos
-    ((DataColumn<double>)margen).AsSpan().ToArray()));
+filtrado.AddColumn(margen);
 
 // 5. Agrupar y agregar
-DataFrame resumenPais = filtrado.GroupBy("pais").Agg(
+DataFrame resumen = filtrado.GroupBy("pais").Agg(
     new Dictionary<string, AggFunc>
     {
         { "precio", AggFunc.Mean  },
         { "ventas", AggFunc.Sum   },
-        { "pais",   AggFunc.Count }  // nº pedidos por país
+        { "pais",   AggFunc.Count }
     });
+resumen.Print();
 
 // 6. Merge con tabla de clientes
-DataFrame clientes = new CsvLoader().Load("clientes.csv");
+DataFrame clientes    = new CsvLoader().Load("clientes.csv");
 DataFrame enriquecido = filtrado.Merge(clientes,
     leftOn:  new[] { "id_cliente" },
     rightOn: new[] { "cliente_id" },
     how: JoinType.Left);
 
 // 7. Exportar
-JsonExporter.Export(resumenPais, "resumen_pais.json", JsonOptions.Records);
-CsvExporter.Export(enriquecido, "ventas_enriquecidas.csv");
+JsonExporter.Export(resumen,      "resumen_pais.json",      JsonOptions.Records);
+CsvExporter.Export(enriquecido,   "ventas_enriquecidas.csv");
 ```
+
+---
+
+## Dependencias
+
+| Paquete | Versión | Uso |
+|---|---|---|
+| `ExcelDataReader`         | ≥ 3.6  | Lectura de `.xlsx` / `.xls`           |
+| `ExcelDataReader.DataSet` | ≥ 3.6  | Adapter DataSet para ExcelDataReader  |
+| `Newtonsoft.Json`         | ≥ 13.0 | Parsing y serialización JSON          |
+
+El exportador Excel (`ExcelExporter`) no tiene dependencias externas: genera `.xlsx` directamente con Open XML puro usando `System.IO.Compression`.
