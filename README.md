@@ -2,6 +2,17 @@
 
 **MiniPandas.Core** es una librería .NET (net472) inspirada en pandas de Python para manipulación tabular de datos. Proporciona un `DataFrame` tipado con columnas fuertemente tipadas, operaciones de filtrado, agrupación, merge y aritmética vectorizada, junto con soporte de carga/exportación para CSV, Excel y JSON.
 
+<div align="center">
+
+![.NET](https://img.shields.io/badge/.NET-4.7.2-512BD4?style=flat-square&logo=dotnet)
+![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
+![Platform](https://img.shields.io/badge/platform-Windows%20)
+
+**Librería .NET inspirada en pandas de Python para manipulación tabular de datos de alto rendimiento.**
+
+Columnas fuertemente tipadas · Filtrado vectorizado · GroupBy · Merge · CSV/Excel/JSON
+
+</div>
 ---
 
 ## Tabla de contenidos
