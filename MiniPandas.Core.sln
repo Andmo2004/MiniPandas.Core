@@ -1,13 +1,9 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 16
-VisualStudioVersion = 16.0.36631.11
+# Visual Studio Version 18
+VisualStudioVersion = 18.3.11520.95 d18.3
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MiniPandas.Core", "MiniPandas.Core.csproj", "{089DBE63-A746-4A93-A42D-51DE339343AC}"
-EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MiniPandas.Tests", "..\MiniPandas.Tests\MiniPandas.Tests.csproj", "{0D7F7343-E124-4D84-AB53-95A6B939FE59}"
-EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MiniPandas.Demo", "..\MiniPandas.Demo\MiniPandas.Demo.csproj", "{5E1CC0AE-890C-4220-B3CB-7738F23BFEB2}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -19,14 +15,6 @@ Global
 		{089DBE63-A746-4A93-A42D-51DE339343AC}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{089DBE63-A746-4A93-A42D-51DE339343AC}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{089DBE63-A746-4A93-A42D-51DE339343AC}.Release|Any CPU.Build.0 = Release|Any CPU
-		{0D7F7343-E124-4D84-AB53-95A6B939FE59}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{0D7F7343-E124-4D84-AB53-95A6B939FE59}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{0D7F7343-E124-4D84-AB53-95A6B939FE59}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{0D7F7343-E124-4D84-AB53-95A6B939FE59}.Release|Any CPU.Build.0 = Release|Any CPU
-		{5E1CC0AE-890C-4220-B3CB-7738F23BFEB2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{5E1CC0AE-890C-4220-B3CB-7738F23BFEB2}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{5E1CC0AE-890C-4220-B3CB-7738F23BFEB2}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{5E1CC0AE-890C-4220-B3CB-7738F23BFEB2}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
